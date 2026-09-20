@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model & cache files (tracked via git LFS)
+# models/*.pkl
+# models/ir_cache/*.pkl
+# models/ir_cache/*.npz
+
+# Output images (keep but track)
+# output/*.png and output/*.txt are small, keep tracked
+
+# Temp
+tmp/
+temp/
