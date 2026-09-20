@@ -1,6 +1,24 @@
 # KUAKE 医学段落检索 LR Rerank
 
-基于 sklearn LogisticRegression 实现的轻量化 Pointwise Rerank，在 CBLUE 基准的 KUAKE-QTR（查询-标题相关性）和 KUAKE-IR（医学段落检索）数据集上完成训练、评估与推理。
+基于 sklearn LogisticRegression 实现的轻量化 **Pointwise Rerank**（重排序模型），在 CBLUE 基准的 KUAKE-QTR（查询-标题相关性）和 KUAKE-IR（医学段落检索）数据集上完成训练、评估与推理。
+
+> 📖 详细的**全流程图文技术报告**请参见 [`lr_rerank_report.html`](./lr_rerank_report.html)，包含 Rerank 概念图解、Pipeline 架构图、12 维特征详解、两阶段检索流程图等面向小白的通俗讲解。
+
+---
+
+## 什么是 Rerank？
+
+**一句话理解**：Rerank 就是对搜索引擎初步召回的结果进行二次排序，把最相关的排到最前面。
+
+> 想象去图书馆找书——第一步是**检索**：管理员从书架中快速挑出可能相关的 200 本书。第二步是 **Rerank**：你翻看标题和摘要，把最相关的 10 本挑出来放到桌上。
+
+本项目使用 **Pointwise 方法**：对每个 query-document 对独立打分，按分数从高到低排列。Rerank 方法对比：
+
+| 方法 | 思想 | 复杂度 | 代表 |
+|------|------|--------|------|
+| **Pointwise** | 对每个 query-doc 对独立打分 | 低 | Logistic Regression、BERT 单塔 |
+| Pairwise | 比较文档对的相对顺序 | 中 | RankNet、LambdaRank |
+| Listwise | 直接优化整个排序列表的指标 | 高 | ListNet、LambdaMART |
 
 ## 项目结构
 
@@ -22,56 +40,124 @@
 │   ├── infer_qtr.py                # KUAKE-QTR 测试集推理
 │   └── infer_ir.py                 # KUAKE-IR 检索 + Rerank
 ├── models/
-│   ├── lr_rerank.pkl               # 训练好的 LR Pipeline
+│   ├── lr_rerank.pkl               # 训练好的 LR Pipeline（1.7 GB）
 │   └── ir_cache/                   # IR TF-IDF 向量化缓存
 │       ├── ir_tfidf_vectorizer.pkl
 │       └── ir_tfidf_matrix.npz
 ├── output/
 │   ├── eval_report.txt             # 完整评估报告
-│   ├── confusion_matrix.png        # 混淆矩阵
+│   ├── confusion_matrix.png        # 混淆矩阵（验证集）
 │   ├── feature_importance.png      # 特征重要性 Top-30
 │   ├── KUAKE-QTR_test_pred.json    # QTR 测试集预测 (5,465 条)
 │   ├── KUAKE-IR_dev_pred.tsv       # IR 检索排序结果 (10,000 行)
-│   └── lr_rerank_report.html       # 全流程技术报告 (含图文)
+│   └── lr_rerank_report.html       # 全流程技术报告（含图文 SVG 图解）
 └── README.md                       # 本文档
 ```
 
+---
+
 ## 数据集
 
-| 数据集 | 用途 | 规模 | 说明 |
+| 数据集 | 用途 | 规模 | 标签 |
 |--------|------|------|------|
-| KUAKE-QTR | Query-Title 相关性分类 | 24,174 train / 2,913 dev / 5,465 test | 4 分类 (0~3) |
-| KUAKE-IR | 段落检索 | 958,846 篇段落 / 1,000 条标注查询 | 两阶段检索 |
+| **KUAKE-QTR** | Query-Title 相关性分类 | 24,174 train / 2,913 dev / 5,465 test | 4 分类 (0=不相关, 1=略相关, 2=较相关, 3=完全相关) |
+| **KUAKE-IR** | 段落检索 | 958,846 篇段落库 / 1,000 查询标注 | query-doc 相关/不相关 |
+
+QTR 训练集 label 分布：label=0 (16.1%) / label=1 (22.3%) / label=2 (22.8%) / label=3 (38.9%)，其中完全相关占比最高。
+
+---
+
+## 核心概念（面向小白）
+
+### TF-IDF（词频-逆文档频率）
+衡量一个词在文档中的重要性。TF = 词在文档中出现的次数，IDF = 词在整个语料中的稀缺程度。本项目使用 `char_wb` 分析器在字符级别上做 ngram(1~3)，设置 `sublinear_tf=True`（对数平滑）。
+
+### BM25（Best Matching 25）
+信息检索中最常用的排序函数，是 TF-IDF 的改进版。引入了两个参数：**k1** 控制词频饱和度，**b** 控制文档长度归一化。本项目实现了一个轻量版 BM25，基于 Counter 统计词频对单个文档对计算分数。
+
+### Logistic Regression（逻辑回归）
+一种广义线性模型，通过 Softmax 函数将线性输出映射为概率分布，适用于多分类问题。相比深度模型，LR 训练快、可解释性强（特征权重直接反映重要性）。
+
+### NDCG（归一化折损累计增益）
+排序质量的核心指标，不仅考虑"相关文档是否被召回"，还考虑排序位置——越靠前权重越高。NDCG@10 = 1.0 表示完美排序。
+
+### MRR（平均倒数排名）
+第一个相关文档所在位置倒数的平均值。第一位 = 1.0，第二位 = 0.5，反映模型将最相关内容排到最前面的能力。
+
+---
 
 ## 方法
 
 ### Pipeline 架构
 
-特征提取通过 `sklearn FeatureUnion` 并行计算 4 组特征，拼接后送入 `LogisticRegression`（multinomial softmax）：
+通过 `sklearn FeatureUnion` **并行计算 4 组特征**，拼接后送入 `LogisticRegression`（multinomial softmax），取 P(label≥2) 作为 Rerank 排序分数：
 
-1. **手动特征 (12 维)**：词重叠率、Jaccard 系数、Query/Title 相互命中比、编辑距离、最长公共子串、数字匹配、长度特征、BM25 分数
-2. **Query TF-IDF**：字符级 char_wb ngram(1,3)
-3. **Title TF-IDF**：字符级 char_wb ngram(1,3)
-4. **Concat TF-IDF**：字符级 char ngram(1,2)
+```
+              ┌──────────────┐
+              │ query + title│
+              └──────┬───────┘
+         ┌───────────┼───────────────────┐
+         ▼           ▼           ▼       ▼
+   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐
+   │ 手动特征 │ │Query    │ │Title    │ │Concat    │
+   │ (12维)  │ │TF-IDF   │ │TF-IDF   │ │TF-IDF    │
+   └────┬────┘ └────┬────┘ └────┬────┘ └────┬─────┘
+        └───────────┼───────────┼───────────┘
+                    ▼
+           ┌────────────────┐
+           │  FeatureUnion  │
+           │ (拼接～15000维) │
+           └───────┬────────┘
+                   ▼
+          ┌────────────────┐
+          │ LogisticRegr.  │
+          │ Softmax 4分类  │
+          └───────┬────────┘
+                   ▼
+          ┌────────────────┐
+          │ Rerank 排序分数 │
+          │ P(label≥2)     │
+          └────────────────┘
+```
+
+#### 12 维手动特征详解
+
+| # | 特征 | 说明 | 含义 |
+|---|------|------|------|
+| 1 | overlap_ratio | query 和 title 公共 token 数 / query token 数 | 词重叠比例 |
+| 2 | jaccard | 公共 token 数 / 并集 token 数 | 集合相似度 |
+| 3 | q_hit_title | query 命中 title 的 token 比例 | Query 对 Title 的覆盖率 |
+| 4 | t_hit_query | title 命中 query 的 token 比例 | Title 对 Query 的覆盖率 |
+| 5 | edit_dist_norm | 归一化编辑距离 | 字符串相似度（Levenshtein） |
+| 6 | lcs_len | 最长公共子串长度 | 连续相同字符数 |
+| 7 | lcs_ratio | 最长公共子串 / min(len1, len2) | 连续相同比例 |
+| 8 | digit_match | 相同数字个数 | 数字一致性（如剂量、时间） |
+| 9 | len_ratio | title_len / query_len | 长度比 |
+| 10 | len_diff | \|len1 - len2\| | 绝对长度差 |
+| 11 | query_len | query 的字符数 | Query 本身长度 |
+| 12 | bm25_score | 轻量 BM25 分数 | 经典 IR 相关性分数 |
+
+> BM25 分数在特征重要性中排名第 2，印证了传统 IR 特征在排序中仍然不可或缺。
 
 ### IR 两阶段检索
 
-1. **第一阶段 (初筛)**：TF-IDF 余弦相似度，从 96 万段落中召回 top-200
-2. **第二阶段 (Rerank)**：LR Pipeline 对候选重新打分，取 P(label≥2) 作为排序分，输出 top-10
+```
+段落库 (958,846篇) ──→ TF-IDF 向量化 ──→ 余弦相似度 ──→ Top-200 ──→ LR Rerank ──→ Top-10
+```
+
+1. **第一阶段（初筛）**：将 96 万段落用 TfidfVectorizer 向量化为稀疏矩阵，对每个 query 通过稀疏矩阵乘法计算余弦相似度，取出 top-200
+2. **第二阶段（Rerank）**：对 top-200 候选构建特征向量（12 维手动 + TF-IDF），LR 模型预测 P(label≥2) 作为排序分，输出 top-10
+
+> 初筛的 TF-IDF 矩阵和向量化器会缓存到 `models/ir_cache/`，下次运行直接加载。
+
+---
 
 ## 环境要求
 
 ```
 Python >= 3.8
-scikit-learn
-pandas
-numpy
-jieba
-python-Levenshtein
-matplotlib
-seaborn
-joblib
-scipy
+scikit-learn, pandas, numpy, jieba, python-Levenshtein,
+matplotlib, seaborn, joblib, scipy
 ```
 
 安装依赖：
@@ -85,6 +171,8 @@ jieba 如遇构建问题，可使用：
 ```bash
 pip install --no-build-isolation jieba
 ```
+
+---
 
 ## 运行指南
 
@@ -103,11 +191,11 @@ python -c "import sys; sys.path.insert(0, '.'); from src.train_eval import main;
 ```
 
 训练过程包含：
-- GroupKFold (3折) 交叉验证
-- GridSearchCV 超参数搜索（TF-IDF max_features、LR C）
-- 验证集评估（Accuracy、NDCG@10、MRR）
+- **GroupKFold (3折)** 交叉验证（按 query 分组，防止数据泄露）
+- **GridSearchCV** 超参数搜索：TF-IDF max_features ∈ {3000, 5000}，LR C ∈ {0.5, 1.0}，共 16 组合 × 3 折 = 48 次训练
+- 验证集评估（Accuracy, NDCG@10, MRR）
 - 混淆矩阵与特征重要性图生成
-- 模型保存
+- 模型保存到 `models/lr_rerank.pkl`
 
 ### 3. KUAKE-QTR 测试集推理
 
@@ -115,7 +203,7 @@ python -c "import sys; sys.path.insert(0, '.'); from src.train_eval import main;
 python -c "import sys; sys.path.insert(0, '.'); from src.infer_qtr import main; main()"
 ```
 
-输出：`output/KUAKE-QTR_test_pred.json`（5,465 条预测）
+输出：`output/KUAKE-QTR_test_pred.json`（5,465 条，含 predict_label 和 predict_score）
 
 ### 4. KUAKE-IR 检索 + Rerank
 
@@ -123,41 +211,70 @@ python -c "import sys; sys.path.insert(0, '.'); from src.infer_qtr import main; 
 python -c "import sys; sys.path.insert(0, '.'); from src.infer_ir import main; main()"
 ```
 
-输出：`output/KUAKE-IR_dev_pred.tsv`（1,000 query × 10 doc）
+输出：`output/KUAKE-IR_dev_pred.tsv`（1,000 query × 10 doc，共 10,000 行）
+
+> ⚠ IR 全量检索需加载 96 万段落构建 TF-IDF 索引，占用内存约 2-4 GB，首次运行耗时约 2-3 分钟，后续加载缓存仅需数秒。
+
+---
 
 ## 评估结果
 
-### KUAKE-QTR
+### KUAKE-QTR（验证集）
 
-| 指标 | 数值 |
-|------|------|
-| Accuracy | 0.5613 |
-| NDCG@10 | 0.8689 |
-| MRR | 0.6152 |
+| 指标 | 数值 | 含义 |
+|------|------|------|
+| Accuracy | 0.5613 | 4 分类准确率（随机基线约 25%） |
+| NDCG@10 | **0.8689** | 排序质量高 |
+| MRR | 0.6152 | 首个相关文档平均排在第 2 位 |
 
-### KUAKE-IR
+![KUAKE-QTR 混淆矩阵](./output/confusion_matrix.png)
 
-| 指标 | 数值 |
-|------|------|
-| NDCG@10 | 0.7158 |
-| MRR | 0.0176 |
-| Recall@10 | 0.0280 |
+### KUAKE-IR（验证集，1,000 query）
+
+| 指标 | 数值 | 含义 |
+|------|------|------|
+| NDCG@10 | **0.7158** | 从 96 万段落中检索排序，表现良好 |
+| MRR | 0.0176 | 每个 query 仅标注 1 个相关 doc，MRR 偏低 |
+| Recall@10 | 0.0280 | 标注不完整，实际召回的可能更多 |
+
+### 最佳超参数
+
+| 参数 | 最佳值 |
+|------|--------|
+| TF-IDF max_features（query） | 3000 |
+| TF-IDF max_features（title） | 3000 |
+| TF-IDF max_features（concat） | 5000 |
+| LR C（正则化强度倒数） | 0.5 |
+
+### 特征重要性 Top-5
+
+| 排序 | 特征 | 权重 |
+|------|------|------|
+| 1 | f1858（concat TF-IDF 特征） | 1.219 |
+| 2 | **f12（BM25 分数）** | **1.192** |
+| 3 | f1860 | 0.969 |
+| 4 | f1140 | 0.953 |
+| 5 | f3355 | 0.926 |
+
+![特征重要性 Top-30](./output/feature_importance.png)
+
+---
 
 ## 模型使用示例
 
 ```python
 import joblib
-import numpy as np
+import pandas as pd
 
 # 加载模型
 pipeline = joblib.load("models/lr_rerank.pkl")
 
 # 单条预测
-query = "糖尿病饮食注意事项"
-title = "糖尿病患者饮食指南"
-
-import pandas as pd
-df = pd.DataFrame([{"query": query, "title": title, "label": -1}])
+df = pd.DataFrame([{
+    "query": "糖尿病饮食注意事项",
+    "title": "糖尿病患者饮食指南",
+    "label": -1  # dummy
+}])
 probs = pipeline.predict_proba(df)
 score = probs[0, 2] + probs[0, 3]  # P(label≥2) 作为排序分
 pred = pipeline.predict(df)[0]
@@ -165,20 +282,35 @@ pred = pipeline.predict(df)[0]
 print(f"预测标签: {pred}, 排序分数: {score:.4f}")
 ```
 
+---
+
 ## 产出物
 
 | 文件 | 格式 | 说明 |
 |------|------|------|
-| `models/lr_rerank.pkl` | pickle | 完整 sklearn Pipeline，可加载推理 |
+| `models/lr_rerank.pkl` | pickle | 完整 sklearn Pipeline，可加载推理（1.7 GB，LFS 跟踪） |
 | `output/KUAKE-QTR_test_pred.json` | JSON | 5,465 条测试预测 |
 | `output/KUAKE-IR_dev_pred.tsv` | TSV | 检索排序结果 |
 | `output/eval_report.txt` | Text | 完整评估报告 |
 | `output/confusion_matrix.png` | PNG | 混淆矩阵热图 |
 | `output/feature_importance.png` | PNG | 特征重要性 Top-30 |
-| `output/lr_rerank_report.html` | HTML | 全流程技术报告（含图文） |
+| **`output/lr_rerank_report.html`** | **HTML** | **全流程技术报告（含图文 SVG 图解、概念通俗讲解）** |
+
+---
+
+## 如何进一步优化
+
+- **Pairwise 训练**：使用 LambdaRank 直接优化排序指标，替代 Pointwise 分类
+- **语义特征**：引入预训练语言模型（如 BERT）提取深层语义特征替代 TF-IDF
+- **领域特征**：增加医学实体匹配、同义词扩展等医学领域特征
+- **更大的候选集**：初筛从 top-200 扩展到 top-500 或 top-1000
 
 ## 参考
 
 - [CBLUE 基准](https://github.com/aliyun/research-duty) - 中文生物医学语言理解评估
-- [scikit-learn Pipeline](https://scikit-learn.org/stable/modules/generated/sklearn.pipeline.Pipeline.html)
-- [scikit-learn FeatureUnion](https://scikit-learn.org/stable/modules/generated/sklearn.pipeline.FeatureUnion.html)
+- [scikit-learn Pipeline & FeatureUnion](https://scikit-learn.org/stable/modules/generated/sklearn.pipeline.Pipeline.html)
+- [全流程图文报告](./lr_rerank_report.html) - 含 SVG 图解的完整技术文档
+
+---
+
+> **Apache 2.0 License**
