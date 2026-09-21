@@ -1,3 +1,4 @@
 models/*.pkl filter=lfs diff=lfs merge=lfs -text
 models/ir_cache/*.pkl filter=lfs diff=lfs merge=lfs -text
 models/ir_cache/*.npz filter=lfs diff=lfs merge=lfs -text
+KUAKE-IR/corpus.tsv filter=lfs diff=lfs merge=lfs -text

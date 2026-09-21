@@ -55,7 +55,7 @@
 └── README.md                       # 本文档
 ```
 
-> 数据说明：`KUAKE-QTR/`、`KUAKE-IR/` 目录及 zip 压缩包体积大，未纳入版本库（已在 `.gitignore` 排除），请从 [CBLUE 数据集](https://github.com/aliyun/research-duty) 下载后放入项目根目录。所有路径均基于 `__file__` 动态计算，克隆后无需修改任何路径即可直接运行。
+> 数据说明：数据集已纳入版本库。其中 `KUAKE-IR/corpus.tsv`（334 MB）通过 Git LFS 跟踪。所有路径均基于 `__file__` 动态计算，克隆后无需修改任何路径即可直接运行。
 
 ---
 

@@ -14,9 +14,8 @@ build/
 Thumbs.db
 __MACOSX/
 
-# 数据集原始文件（体积过大，不纳入版本库，需自行从 CBLUE 下载）
-KUAKE-QTR/
-KUAKE-IR/
+# 数据集原始文件（纳入版本库，LFS 跟踪大文件）
+# KUAKE-QTR/ 和 KUAKE-IR/ 已在版本库中
 *.zip
 
 # 中间缓存（data_prepare 生成的 DataFrame 缓存）
@@ -34,3 +33,6 @@ models/qtr_dev.pkl
 # Temp
 tmp/
 temp/
+
+# IDE
+.trae/
