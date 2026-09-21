@@ -9,11 +9,6 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 
-# IDE / Editor
-.vscode/
-.idea/
-.trae/
-
 # OS
 .DS_Store
 Thumbs.db
