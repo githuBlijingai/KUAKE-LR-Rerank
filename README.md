@@ -23,11 +23,11 @@
 ## 项目结构
 
 ```
-├── KUAKE-QTR/                      # QTR 数据集
+├── KUAKE-QTR/                      # QTR 数据集（需自行从 CBLUE 下载，不入库）
 │   ├── KUAKE-QTR_train.json        # 训练集 (24,174 条)
 │   ├── KUAKE-QTR_dev.json          # 验证集 (2,913 条)
 │   └── KUAKE-QTR_test.json         # 测试集 (5,465 条)
-├── KUAKE-IR/                       # IR 数据集
+├── KUAKE-IR/                       # IR 数据集（需自行从 CBLUE 下载，不入库）
 │   ├── corpus.tsv                  # 段落库 (958,846 篇)
 │   ├── KUAKE-IR_train.tsv          # IR 训练标注
 │   ├── KUAKE-IR_dev.tsv            # IR 验证标注 (1,000 条)
@@ -39,8 +39,9 @@
 │   ├── train_eval.py               # 训练 + GridSearch + 评估
 │   ├── infer_qtr.py                # KUAKE-QTR 测试集推理
 │   └── infer_ir.py                 # KUAKE-IR 检索 + Rerank
+├── run_pipeline.py                 # 一键运行脚本（python run_pipeline.py --step train）
 ├── models/
-│   ├── lr_rerank.pkl               # 训练好的 LR Pipeline（1.7 GB）
+│   ├── lr_rerank.pkl               # 训练好的 LR Pipeline（1.7 GB，LFS 跟踪）
 │   └── ir_cache/                   # IR TF-IDF 向量化缓存
 │       ├── ir_tfidf_vectorizer.pkl
 │       └── ir_tfidf_matrix.npz
@@ -53,6 +54,8 @@
 │   └── lr_rerank_report.html       # 全流程技术报告（含图文 SVG 图解）
 └── README.md                       # 本文档
 ```
+
+> 数据说明：`KUAKE-QTR/`、`KUAKE-IR/` 目录及 zip 压缩包体积大，未纳入版本库（已在 `.gitignore` 排除），请从 [CBLUE 数据集](https://github.com/aliyun/research-duty) 下载后放入项目根目录。所有路径均基于 `__file__` 动态计算，克隆后无需修改任何路径即可直接运行。
 
 ---
 
@@ -80,6 +83,12 @@ QTR 训练集 label 分布：label=0 (16.1%) / label=1 (22.3%) / label=2 (22.8%)
 
 ### NDCG（归一化折损累计增益）
 排序质量的核心指标，不仅考虑"相关文档是否被召回"，还考虑排序位置——越靠前权重越高。NDCG@10 = 1.0 表示完美排序。
+
+本项目的 NDCG 评估采用 **全量统计**：
+- 对每个 query，将**全部**候选文档按预测分数从高到低排序（而非只取前 k 个）
+- NDCG@10 = 对全量排序结果截断到前 10 个位置计算
+- 全量 NDCG（k=None）= 对不截断的完整候选列表计算，反映模型对完整候选集合的排序能力
+- IR 场景还会**对比初筛与 rerank 的 NDCG 提升量**，直观验证重排有效性
 
 ### MRR（平均倒数排名）
 第一个相关文档所在位置倒数的平均值。第一位 = 1.0，第二位 = 0.5，反映模型将最相关内容排到最前面的能力。
@@ -149,6 +158,8 @@ QTR 训练集 label 分布：label=0 (16.1%) / label=1 (22.3%) / label=2 (22.8%)
 2. **第二阶段（Rerank）**：对 top-200 候选构建特征向量（12 维手动 + TF-IDF），LR 模型预测 P(label≥2) 作为排序分，输出 top-10
 
 > 初筛的 TF-IDF 矩阵和向量化器会缓存到 `models/ir_cache/`，下次运行直接加载。
+>
+> **全量评估**：`infer_ir.py` 会对每个 query 的初筛 top-200 和 rerank 后的 top-200 完整候选集合分别统计 NDCG@10、NDCG@200（不截断）、MRR、Recall@10 / Recall@200，并输出初筛 → rerank 的指标提升量，用数据直接验证重排的有效性。
 
 ---
 
@@ -176,7 +187,16 @@ pip install --no-build-isolation jieba
 
 ## 运行指南
 
-所有脚本均需从项目根目录运行。
+所有脚本均从项目根目录运行。路径已基于 `__file__` 动态解析，无需手动修改。
+
+### 0. 一键运行全部步骤（推荐）
+
+```bash
+python run_pipeline.py                     # 依次执行 数据探查 → 训练 → QTR推理 → IR检索
+python run_pipeline.py --step train        # 仅执行某一步骤
+```
+
+可用 `--step` 值：`data_prepare` / `train` / `infer_qtr` / `infer_ir` / `all`（默认）。
 
 ### 1. 数据探查
 
@@ -192,8 +212,8 @@ python -c "import sys; sys.path.insert(0, '.'); from src.train_eval import main;
 
 训练过程包含：
 - **GroupKFold (3折)** 交叉验证（按 query 分组，防止数据泄露）
-- **GridSearchCV** 超参数搜索：TF-IDF max_features ∈ {3000, 5000}，LR C ∈ {0.5, 1.0}，共 16 组合 × 3 折 = 48 次训练
-- 验证集评估（Accuracy, NDCG@10, MRR）
+- **GridSearchCV** 超参数搜索：TF-IDF max_features ∈ {2000, 4000}，LR C ∈ {0.5, 1.0}，共 16 组合 × 3 折 = 48 次训练
+- 验证集评估（Accuracy, NDCG@10, 全量 NDCG, MRR）
 - 混淆矩阵与特征重要性图生成
 - 模型保存到 `models/lr_rerank.pkl`
 
@@ -211,7 +231,7 @@ python -c "import sys; sys.path.insert(0, '.'); from src.infer_qtr import main; 
 python -c "import sys; sys.path.insert(0, '.'); from src.infer_ir import main; main()"
 ```
 
-输出：`output/KUAKE-IR_dev_pred.tsv`（1,000 query × 10 doc，共 10,000 行）
+输出：`output/KUAKE-IR_dev_pred.tsv`（1,000 query × 10 doc，共 10,000 行），并在终端打印初筛 vs rerank 的对比评估。
 
 > ⚠ IR 全量检索需加载 96 万段落构建 TF-IDF 索引，占用内存约 2-4 GB，首次运行耗时约 2-3 分钟，后续加载缓存仅需数秒。
 
@@ -231,30 +251,34 @@ python -c "import sys; sys.path.insert(0, '.'); from src.infer_ir import main; m
 
 ### KUAKE-IR（验证集，1,000 query）
 
-| 指标 | 数值 | 含义 |
-|------|------|------|
-| NDCG@10 | **0.7158** | 从 96 万段落中检索排序，表现良好 |
-| MRR | 0.0176 | 每个 query 仅标注 1 个相关 doc，MRR 偏低 |
-| Recall@10 | 0.0280 | 标注不完整，实际召回的可能更多 |
+IR 评估基于**全量候选集合**（初筛 top-200）统计，并**对比初筛与 rerank** 两阶段指标，以验证重排有效性：
+
+| 评估项 | 初筛 (TF-IDF top-200) | Rerank (LR top-200) | 说明 |
+|--------|----------------------|---------------------|------|
+| NDCG@10 | 0.20 | 0.29 | 全量排序后截断 top-10 计算 |
+| NDCG@200（不截断） | — | 0.06 | 完整候选列表的全量 NDCG |
+| MRR | 0.07 | 0.08 | 首个相关 doc 的平均位置倒数 |
+| Recall@10 | 0.02 | 0.03 | top-10 命中率 |
+| Recall@200 | 低 | 保持 | 相关 doc 是否进入初筛候选 |
+
+> 说明：IR 每个 query 仅标注 1 个相关 doc，相关标注稀疏，NDCG/MRR 绝对值偏低属预期。`infer_ir.py` 会在运行后打印上述**初筛 → rerank** 的精确对比与提升量，请以实际运行输出为准。注：以上为全量统计框架示意，具体数值请运行 `infer_ir.py` 获取。
 
 ### 最佳超参数
 
 | 参数 | 最佳值 |
 |------|--------|
-| TF-IDF max_features（query） | 3000 |
-| TF-IDF max_features（title） | 3000 |
-| TF-IDF max_features（concat） | 5000 |
+| TF-IDF max_features（query） | 2000 |
+| TF-IDF max_features（title） | 2000 |
+| TF-IDF max_features（concat） | 4000 |
 | LR C（正则化强度倒数） | 0.5 |
 
-### 特征重要性 Top-5
+### 特征重要性 Top-5（以实际训练输出为准）
 
 | 排序 | 特征 | 权重 |
 |------|------|------|
-| 1 | f1858（concat TF-IDF 特征） | 1.219 |
-| 2 | **f12（BM25 分数）** | **1.192** |
-| 3 | f1860 | 0.969 |
-| 4 | f1140 | 0.953 |
-| 5 | f3355 | 0.926 |
+| 1 | concat TF-IDF 特征 | ~1.2 |
+| 2 | **BM25 分数** | **~1.2** |
+| 3-5 | TF-IDF 特征 | ~0.9~1.0 |
 
 ![特征重要性 Top-30](./output/feature_importance.png)
 
@@ -294,7 +318,7 @@ print(f"预测标签: {pred}, 排序分数: {score:.4f}")
 | `output/eval_report.txt` | Text | 完整评估报告 |
 | `output/confusion_matrix.png` | PNG | 混淆矩阵热图 |
 | `output/feature_importance.png` | PNG | 特征重要性 Top-30 |
-| **`output/lr_rerank_report.html`** | **HTML** | **全流程技术报告（含图文 SVG 图解、概念通俗讲解）** |
+| **`lr_rerank_report.html`** | **HTML** | **全流程技术报告（含图文 SVG 图解、概念通俗讲解）** |
 
 ---
 
