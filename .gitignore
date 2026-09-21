@@ -9,20 +9,31 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 
-# IDE
+# IDE / Editor
 .vscode/
 .idea/
+.trae/
 
 # OS
 .DS_Store
 Thumbs.db
+__MACOSX/
+
+# 数据集原始文件（体积过大，不纳入版本库，需自行从 CBLUE 下载）
+KUAKE-QTR/
+KUAKE-IR/
+*.zip
+
+# 中间缓存（data_prepare 生成的 DataFrame 缓存）
+models/qtr_train.pkl
+models/qtr_dev.pkl
 
 # Model & cache files (tracked via git LFS)
 # models/*.pkl
 # models/ir_cache/*.pkl
 # models/ir_cache/*.npz
 
-# Output images (keep but track)
+# Output images & reports (keep but track)
 # output/*.png and output/*.txt are small, keep tracked
 
 # Temp

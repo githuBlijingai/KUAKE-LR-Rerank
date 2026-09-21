@@ -106,13 +106,19 @@ def main():
     plt.close()
     print(f"  混淆矩阵已保存: {cm_path}")
 
-    # 排序指标
-    print("\n  排序指标 (按 query 分组评估):")
+    # 排序指标（全量统计：对每个 query 的全部候选文档排序后计算）
+    print("\n  排序指标 (按 query 分组评估，全量统计):")
     dev_df_eval = dev_df.copy()
     dev_df_eval["score"] = dev_probs[:, 2] + dev_probs[:, 3]
+
+    # NDCG@10 与全量 NDCG（不截断文档数）
     ranking_metrics = compute_ranking_metrics(dev_df_eval, k=10)
+    ranking_metrics_full = compute_ranking_metrics(dev_df_eval, k=None)
     for metric, value in ranking_metrics.items():
         print(f"    {metric}: {value:.4f}")
+    for metric, value in ranking_metrics_full.items():
+        print(f"    {metric} (全量): {value:.4f}")
+    ranking_metrics.update(ranking_metrics_full)
 
     # 4. 特征重要性
     print("\n[4/6] 特征重要性分析...")

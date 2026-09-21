@@ -2,12 +2,14 @@
 KUAKE LR Rerank - 公共工具函数
 """
 
+import os
 import json
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Dict, Optional
 
-PROJECT_ROOT = r"C:\Users\Administrator.DESKTOP-VIVLMOS\Desktop\Chinese_Medical_QA_Dataset-fe7526dbba0fa3264e28792d85662e6415a1d409"
+# 基于文件位置动态计算项目根目录，避免硬编码本机绝对路径
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def load_qtr_data(split: str = "train", has_label: bool = True) -> pd.DataFrame:
@@ -16,7 +18,7 @@ def load_qtr_data(split: str = "train", has_label: bool = True) -> pd.DataFrame:
     split: "train" | "dev" | "test"
     has_label: 数据是否包含 label 字段（test 不包含）
     """
-    path = f"{PROJECT_ROOT}\\KUAKE-QTR\\KUAKE-QTR_{split}.json"
+    path = os.path.join(PROJECT_ROOT, "KUAKE-QTR", f"KUAKE-QTR_{split}.json")
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     df = pd.DataFrame(data)
@@ -29,7 +31,7 @@ def load_qtr_data(split: str = "train", has_label: bool = True) -> pd.DataFrame:
 
 def load_ir_corpus() -> pd.DataFrame:
     """加载 KUAKE-IR 的段落语料库 (corpus.tsv)"""
-    path = f"{PROJECT_ROOT}\\KUAKE-IR\\corpus.tsv"
+    path = os.path.join(PROJECT_ROOT, "KUAKE-IR", "corpus.tsv")
     df = pd.read_csv(path, sep="\t", header=None, names=["doc_id", "passage"])
     df["doc_id"] = df["doc_id"].astype(int)
     return df
@@ -40,7 +42,7 @@ def load_ir_queries(split: str = "train") -> Dict[int, str]:
     加载 KUAKE-IR 的 query 列表
     split: "train" | "dev" | "test"
     """
-    path = f"{PROJECT_ROOT}\\KUAKE-IR\\KUAKE-IR_{split}_query.txt"
+    path = os.path.join(PROJECT_ROOT, "KUAKE-IR", f"KUAKE-IR_{split}_query.txt")
     queries = {}
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -56,7 +58,7 @@ def load_ir_relevance(split: str = "dev") -> pd.DataFrame:
     加载 KUAKE-IR 的 query-doc 相关性标注
     split: "dev" | "train"
     """
-    path = f"{PROJECT_ROOT}\\KUAKE-IR\\KUAKE-IR_{split}.tsv"
+    path = os.path.join(PROJECT_ROOT, "KUAKE-IR", f"KUAKE-IR_{split}.tsv")
     df = pd.read_csv(path, sep="\t", header=None, names=["query_id", "doc_id"])
     df["query_id"] = df["query_id"].astype(int)
     df["doc_id"] = df["doc_id"].astype(int)
@@ -119,33 +121,55 @@ def ndcg_at_k(y_true: np.ndarray, y_score: np.ndarray, k: int = 10) -> float:
 
 
 def compute_ranking_metrics(df: pd.DataFrame, score_col: str = "score",
-                            label_col: str = "label", k: int = 10) -> Dict[str, float]:
+                            label_col: str = "label", k: Optional[int] = None,
+                            relevant_threshold: int = 2) -> Dict[str, float]:
     """
-    按 query 分组计算排序指标 (NDCG, MRR)
-    df 需包含: query, score, label 三列
+    按 query 分组计算排序指标 (NDCG, MRR)，基于**全量**候选文档统计。
+
+    df 需包含: query, score, label 三列。
+
+    参数:
+        k: NDCG 截断位置。None 表示不对文档数截断（使用每个 query 的全部文档，
+           即全量 NDCG）；设置具体整数则对该 query 排序结果取前 k 个计算 NDCG@k。
+        relevant_threshold: 判定"相关"的 label 阈值，>= 该值的文档计为相关（用于 MRR）。
+
+    说明:
+        对每个 query，先将该 query 的**全部**候选文档按 score 降序排列，再计算排序指标，
+        而非只取 head(k)。这样 NDCG 能反映模型对完整候选集合的排序能力。
     """
     from sklearn.metrics import ndcg_score
     ndcg_list = []
     mrr_list = []
 
     for qid, group in df.groupby("query"):
-        group = group.sort_values(score_col, ascending=False).head(k)
-        y_true = group[label_col].values.reshape(1, -1)
-        y_score = group[score_col].values.reshape(1, -1)
+        # 全量排序（不再在这里截断文档数）
+        group = group.sort_values(score_col, ascending=False)
+        y_true_all = group[label_col].values
+        y_score_all = group[score_col].values
 
-        if len(y_true.flatten()) >= 2:
-            ndcg = ndcg_score(y_true, y_score, k=min(k, len(y_true.flatten())))
+        # 对排序结果取前 k 个作为 NDCG@k 的评估窗口；k=None 用全量
+        if k is not None:
+            y_true = y_true_all[:k]
+            y_score = y_score_all[:k]
+        else:
+            y_true = y_true_all
+            y_score = y_score_all
+
+        # 至少要有 2 个文档才计算 NDCG（sklearn 要求）
+        if len(y_true) >= 2:
+            ndcg = ndcg_score(y_true.reshape(1, -1), y_score.reshape(1, -1))
             ndcg_list.append(ndcg)
 
-        # MRR: 第一个相关文档 (label>=2) 的位置倒数
-        for rank, label in enumerate(group[label_col].values, 1):
-            if label >= 2:
+        # MRR: 第一个相关文档 (label >= relevant_threshold) 在**全量**排序中的位置倒数
+        for rank, label in enumerate(y_true_all, 1):
+            if label >= relevant_threshold:
                 mrr_list.append(1.0 / rank)
                 break
         else:
             mrr_list.append(0.0)
 
-    return {
-        f"NDCG@{k}": float(np.mean(ndcg_list)),
-        "MRR": float(np.mean(mrr_list)),
-    }
+    metrics = {"MRR": float(np.mean(mrr_list))}
+    if ndcg_list:
+        metric_name = "NDCG" if k is None else f"NDCG@{k}"
+        metrics[metric_name] = float(np.mean(ndcg_list))
+    return metrics

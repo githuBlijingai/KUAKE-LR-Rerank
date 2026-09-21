@@ -13,10 +13,6 @@ import json
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-PROJ_ROOT = os.path.dirname(os.path.abspath(__file__))
-if PROJ_ROOT not in sys.path:
-    sys.path.insert(0, PROJ_ROOT)
-
 from joblib import load
 
 PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

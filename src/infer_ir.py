@@ -118,64 +118,90 @@ def main():
         print(f"  (演示模式: 仅处理前 {N_SAMPLE_QUERIES}/{len(queries)} 条 query)")
 
     all_results = []
-    ndcg_scores = []
-    mrr_scores = []
-    recall_scores = []
+    # 全量评估指标（基于初筛/重排的完整候选集合）
+    first_pass_stats = {"ndcg10": [], "mrr": [], "recall10": [], "recall200": []}
+    rerank_stats = {"ndcg10": [], "ndcg_all": [], "mrr": [], "recall10": []}
     import time
 
     for idx, (qid, query_text) in enumerate(selected_queries):
         t0 = time.time()
 
-        # 第一阶段：TF-IDF 余弦相似度初筛
+        # 第一阶段：TF-IDF 余弦相似度初筛 (top-200)
         top_indices, first_scores = first_pass_retrieval(
             vectorizer, tfidf_matrix, query_text, top_k=TOP_K_BM25
         )
 
-        # 构造 query-passage pair（LR 模型要求 title 字段名）
-        candidates = corpus_df.iloc[top_indices].copy()
+        ground_truth = relevance_dict.get(qid, set())
+
+        # ===== 初筛(top-200) 全量排序评估 =====
+        first_docs = corpus_df.iloc[top_indices].copy()
+        # 判定 200 个候选哪些命中标准答案
+        first_relevant = np.array([1 if int(d) in ground_truth else 0
+                                   for d in first_docs["doc_id"].values])
+        first_recall10 = first_relevant[:10].sum() / len(ground_truth) if ground_truth else 0.0
+        first_recall200 = first_relevant.sum() / len(ground_truth) if ground_truth else 0.0
+        # 初筛 NDCG@10：若首个相关文档在 top-10 内则 NDCG=1，反之为 0
+        first_ndcg10 = 1.0 if first_relevant[:10].sum() > 0 else 0.0
+        first_mrr = 0.0
+        for rank, rel in enumerate(first_relevant, 1):
+            if rel == 1:
+                first_mrr = 1.0 / rank
+                break
+
+        first_pass_stats["ndcg10"].append(first_ndcg10)
+        first_pass_stats["mrr"].append(first_mrr)
+        first_pass_stats["recall10"].append(first_recall10)
+        first_pass_stats["recall200"].append(first_recall200)
+
+        # ===== 构造 rerank 候选，LR 打分 =====
+        candidates = first_docs.copy()
         candidates.rename(columns={"passage": "title"}, inplace=True)
         candidates["query"] = query_text
         candidates["label"] = -1  # dummy
 
-        # 第二阶段：LR Rerank
+        # 第二阶段：LR Rerank 对全部 top-200 打分并重排
         rerank_probs = rerank_pipe.predict_proba(candidates)
         candidates["score"] = rerank_probs[:, 2] + rerank_probs[:, 3]
-
-        # 按 Rerank 分数排序取 top-10
         candidates = candidates.sort_values("score", ascending=False)
-        top_k = candidates.head(TOP_K_RERANK)
 
+        # ===== Rerank 全量排序评估（top-200，不截断）=====
+        rerank_relevant = np.array([1 if int(d) in ground_truth else 0
+                                    for d in candidates["doc_id"].values])
+        rerank_ndcg_all = 0.0
+        if sum(rerank_relevant) > 0:
+            from sklearn.metrics import ndcg_score
+            k_all = len(candidates)
+            rerank_ndcg_all = ndcg_score(
+                rerank_relevant.reshape(1, -1), candidates["score"].values.reshape(1, -1), k=k_all)
+        rerank_stats["ndcg_all"].append(rerank_ndcg_all)
+
+        rerank_ndcg10 = 0.0
+        if rerank_relevant[:10].sum() > 0:
+            from sklearn.metrics import ndcg_score
+            rerank_ndcg10 = ndcg_score(
+                rerank_relevant[:10].reshape(1, -1), candidates["score"].values[:10].reshape(1, -1), k=10)
+        rerank_stats["ndcg10"].append(rerank_ndcg10)
+
+        rerank_mrr = 0.0
+        for rank, rel in enumerate(rerank_relevant, 1):
+            if rel == 1:
+                rerank_mrr = 1.0 / rank
+                break
+        rerank_stats["mrr"].append(rerank_mrr)
+
+        rerank_recall10 = rerank_relevant[:10].sum() / len(ground_truth) if ground_truth else 0.0
+        rerank_stats["recall10"].append(rerank_recall10)
+
+        # ===== 输出最终 top-10 =====
+        top_k = candidates.head(TOP_K_RERANK)
         t1 = time.time()
 
-        # 保存结果
         for _, row in top_k.iterrows():
             all_results.append({
                 "query_id": qid,
                 "doc_id": int(row["doc_id"]),
                 "rerank_score": round(float(row["score"]), 6),
             })
-
-        # 评估
-        ground_truth = relevance_dict.get(qid, set())
-        retrieved = set(top_k["doc_id"].astype(int).values)
-
-        if len(ground_truth) > 0:
-            recall = len(retrieved & ground_truth) / len(ground_truth)
-            recall_scores.append(recall)
-
-        y_true = np.array([1 if d in ground_truth else 0 for d in top_k["doc_id"].values])
-        y_score = top_k["score"].values
-        if len(y_true) >= 2 and sum(y_true) > 0:
-            from sklearn.metrics import ndcg_score
-            ndcg = ndcg_score(y_true.reshape(1, -1), y_score.reshape(1, -1), k=TOP_K_RERANK)
-            ndcg_scores.append(ndcg)
-
-        for rank, doc_id in enumerate(top_k["doc_id"].values, 1):
-            if int(doc_id) in ground_truth:
-                mrr_scores.append(1.0 / rank)
-                break
-        else:
-            mrr_scores.append(0.0)
 
         # 定期打日志
         n_total = len(selected_queries)
@@ -194,18 +220,37 @@ def main():
     )
     print(f"  提交文件: {tsv_path} ({len(result_df)} 行)")
 
-    # 评估指标
+    # 评估指标（全量统计 + 初筛/重排对比）
     eval_summary = "\n" + "=" * 60
-    eval_summary += "\nKUAKE-IR 检索 + LR Rerank 评估结果"
+    eval_summary += "\nKUAKE-IR 检索 + LR Rerank 评估结果 (全量统计)"
     eval_summary += "\n" + "=" * 60
     eval_summary += f"\nTF-IDF 初筛 top-{TOP_K_BM25}, LR Rerank top-{TOP_K_RERANK}"
     eval_summary += f"\n评估 query 数: {len(selected_queries)}"
-    if ndcg_scores:
-        eval_summary += f"\nNDCG@{TOP_K_RERANK}: {np.mean(ndcg_scores):.4f}"
-    if mrr_scores:
-        eval_summary += f"\nMRR: {np.mean(mrr_scores):.4f}"
-    if recall_scores:
-        eval_summary += f"\nRecall@{TOP_K_RERANK}: {np.mean(recall_scores):.4f}"
+
+    # 初筛评估
+    fp = {k: float(np.mean(v)) for k, v in first_pass_stats.items() if v}
+    rk = {k: float(np.mean(v)) for k, v in rerank_stats.items() if v}
+
+    eval_summary += "\n\n[初筛 - TF-IDF top-200 全量统计]"
+    eval_summary += f"\n  NDCG@10: {fp.get('ndcg10', 0):.4f}"
+    eval_summary += f"\n  MRR: {fp.get('mrr', 0):.4f}"
+    eval_summary += f"\n  Recall@10: {fp.get('recall10', 0):.4f}"
+    eval_summary += f"\n  Recall@200: {fp.get('recall200', 0):.4f}"
+
+    eval_summary += "\n\n[Rerank - LR 重排 top-200 全量统计]"
+    eval_summary += f"\n  NDCG@10: {rk.get('ndcg10', 0):.4f}"
+    eval_summary += f"\n  NDCG@200 (全量不截断): {rk.get('ndcg_all', 0):.4f}"
+    eval_summary += f"\n  MRR: {rk.get('mrr', 0):.4f}"
+    eval_summary += f"\n  Recall@10: {rk.get('recall10', 0):.4f}"
+
+    if fp.get('ndcg10') and fp['ndcg10'] > 0:
+        eval_summary += \
+            f"\n\n[Rerank 有效性] NDCG@10 初筛→重排: {fp['ndcg10']:.4f} → " \
+            f"{rk.get('ndcg10', 0):.4f} (提升 {rk.get('ndcg10',0)-fp['ndcg10']:+.4f})"
+    if fp.get('mrr') and fp['mrr'] > 0:
+        eval_summary += \
+            f"\n[Rerank 有效性] MRR 初筛→重排: {fp['mrr']:.4f} → " \
+            f"{rk.get('mrr',0):.4f} (提升 {rk.get('mrr',0)-fp['mrr']:+.4f})"
     eval_summary += "\n" + "=" * 60
     print(eval_summary)
 
