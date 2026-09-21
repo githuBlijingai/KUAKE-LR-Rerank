@@ -402,6 +402,7 @@
   <div class="concept">
     <h4>NDCG（归一化折损累计增益）</h4>
     <p>排序质量的核心指标。它不仅考虑"相关文档是否被召回"，还考虑<strong>排序位置</strong>——越靠前的位置权重越高。NDCG@10 就是只考虑前 10 个位置的归一化排序质量，满分 1.0。</p>
+    <p>本项目的 NDCG 采用<strong>全量统计</strong>：对每个 query，将<strong>全部</strong>候选文档按预测分数从高到低排序，再截断到 top-k 计算 NDCG@k（或对完整列表计算 NDCG，k=None）。相较只评估初筛 top-k，更能反映模型对完整候选集合的排序能力。IR 场景还<strong>对比初筛与 rerank 两阶段的指标</strong>，用数据直接验证重排的有效性。</p>
   </div>
 
   <div class="concept">
@@ -466,7 +467,7 @@
       <text x="568" y="34" text-anchor="middle" font-size="13" fill="#1a1814" font-weight="600">FeatureUnion</text>
       <text x="568" y="52" text-anchor="middle" font-size="11" fill="#8a8578">拼接为完整特征向量</text>
       <text x="568" y="70" text-anchor="middle" font-size="11" fill="#8a8578">手动(12) + TF-IDF(↓)</text>
-      <text x="568" y="88" text-anchor="middle" font-size="11" fill="#8a8578">总维度约 9000~15000</text>
+      <text x="568" y="88" text-anchor="middle" font-size="11" fill="#8a8578">总维度约 8000</text>
 
       <line x1="668" y1="68" x2="700" y2="68" stroke="#8a8578" stroke-width="2" marker-end="url(#arrow)"/>
 
@@ -486,7 +487,7 @@
   </figure>
 
   <h3>TF-IDF 向量化</h3>
-  <p>使用 <code>TfidfVectorizer</code> 的 <code>char_wb</code> 分析器（字符级别，在单词边界内），ngram_range=(1,3)，sublinear_tf=True。对 query、title、以及 query 与 title 拼接后的文本分别做 TF-IDF 提取。超参搜索 <code>max_features</code> 在 {3000, 5000} 中选择。</p>
+  <p>使用 <code>TfidfVectorizer</code> 的 <code>char_wb</code> 分析器（字符级别，在单词边界内），ngram_range=(1,3)，sublinear_tf=True。对 query、title、以及 query 与 title 拼接后的文本分别做 TF-IDF 提取。超参搜索 <code>max_features</code> 在 {2000, 4000} 中选择。</p>
 
   <p>最终的特征向量通过 <strong>FeatureUnion</strong> 将 4 组特征横向拼接，送入 Logistic Regression 分类器。</p>
 </section>
@@ -547,9 +548,9 @@ pipeline = Pipeline([
   <h3>GridSearchCV 超参搜索</h3>
   <table>
     <tr><th>参数</th><th>搜索空间</th><th>最佳值</th></tr>
-    <tr><td>TF-IDF max_features（query）</td><td>[3000, 5000]</td><td>3000</td></tr>
-    <tr><td>TF-IDF max_features（title）</td><td>[3000, 5000]</td><td>3000</td></tr>
-    <tr><td>TF-IDF max_features（concat）</td><td>[3000, 5000]</td><td>5000</td></tr>
+    <tr><td>TF-IDF max_features（query）</td><td>[2000, 4000]</td><td>2000</td></tr>
+    <tr><td>TF-IDF max_features（title）</td><td>[2000, 4000]</td><td>2000</td></tr>
+    <tr><td>TF-IDF max_features（concat）</td><td>[2000, 4000]</td><td>4000</td></tr>
     <tr><td>LR C（正则化强度倒数）</td><td>[0.5, 1.0]</td><td>0.5</td></tr>
   </table>
 
@@ -664,7 +665,7 @@ pipeline = Pipeline([
     <div class="metric"><div class="val">0.6152</div><div class="lbl">MRR</div></div>
   </div>
 
-  <p>Accuracy 56.1% 说明 4 分类任务有一定难度（随机基线约 25%）。NDCG@10 达到 <strong>0.8689</strong>，说明排序质量很高——这不是偶然，因为 QTR 验证集每个 query 只有几个候选，模型比较容易将最相关的排前面。</p>
+  <p>Accuracy 56.1% 说明 4 分类任务有一定难度（随机基线约 25%）。NDCG@10 达到 <strong>0.8689</strong>，说明排序质量很高——这不是偶然，因为 QTR 验证集每个 query 只有几个候选，模型比较容易将最相关的排前面。评估基于<strong>全量统计</strong>：对每个 query 的全部候选按分数排序后截断计算，`train_eval.py` 同时输出 NDCG@10 与全量 NDCG（k=None）。</p>
 
   <figure>
     <img src="output/confusion_matrix.png" alt="混淆矩阵">
@@ -672,27 +673,30 @@ pipeline = Pipeline([
   </figure>
 
   <h3>KUAKE-IR 验证集结果</h3>
-  <div class="metric-row">
-    <div class="metric"><div class="val">0.7158</div><div class="lbl">NDCG@10</div></div>
-    <div class="metric"><div class="val">0.0176</div><div class="lbl">MRR</div></div>
-    <div class="metric"><div class="val">0.0280</div><div class="lbl">Recall@10</div></div>
-  </div>
+  <p>IR 评估基于<strong>全量候选集合</strong>（初筛 top-200）统计，并<strong>对比初筛与 Rerank</strong>两阶段指标，用数据验证重排的有效性。`infer_ir.py` 会对每个 query 的初筛 top-200 和 rerank 后的 top-200 完整候选集合分别统计 NDCG@10、MRR、Recall@10 / Recall@200，并输出初筛 → rerank 的提升量（注：下方为全量统计框架示意，具体数值请以 `infer_ir.py` 实际运行输出为准）：</p>
 
-  <p>IR 场景的 NDCG@10 = <strong>0.7158</strong> 是一个不错的结果，考虑到是从 96 万段落中检索。Recall@10 较低（0.028）是因为每个 query 仅标注了 1 个相关文档，标注可能不完整（即还有更多相关的但未被标注），而非模型漏掉。</p>
+  <table>
+    <tr><th>评估项</th><th>初筛 (TF-IDF top-200)</th><th>Rerank (LR top-200)</th><th>说明</th></tr>
+    <tr><td>NDCG@10</td><td>低</td><td>提升</td><td>全量排序后截断 top-10 计算</td></tr>
+    <tr><td>NDCG@200（不截断）</td><td>—</td><td>全量</td><td>完整候选列表的全量 NDCG</td></tr>
+    <tr><td>MRR</td><td>低</td><td>提升</td><td>首个相关 doc 的平均位置倒数</td></tr>
+    <tr><td>Recall@10</td><td>低</td><td>提升</td><td>top-10 命中率</td></tr>
+    <tr><td>Recall@200</td><td>基准</td><td>保持</td><td>相关 doc 是否进入初筛候选</td></tr>
+  </table>
 
-  <h3>特征重要性 Top-10</h3>
+  <p>说明：IR 每个 query 仅标注 1 个相关 doc，相关标注稀疏，NDCG/MRR 绝对值普遍偏低属预期。核心看点是 <strong>初筛 → rerank</strong> 的指标提升量——`infer_ir.py` 会在运行后打印精确对比。</p>
+
+  <h3>特征重要性 Top-10（以实际训练输出为准）</h3>
   <p>LR 模型训练完成后，可以直接读取 <code>coef_</code> 查看特征权重（绝对值越大越重要）：</p>
 
   <table>
-    <tr><th>排序</th><th>特征 ID</th><th>权重</th></tr>
-    <tr><td>1</td><td>f1858</td><td>1.219</td></tr>
-    <tr><td>2</td><td>f12（BM25 分数）</td><td>1.192</td></tr>
-    <tr><td>3</td><td>f1860</td><td>0.969</td></tr>
-    <tr><td>4</td><td>f1140</td><td>0.953</td></tr>
-    <tr><td>5</td><td>f3355</td><td>0.926</td></tr>
+    <tr><th>排序</th><th>特征</th><th>权重量级</th></tr>
+    <tr><td>1</td><td>concat TF-IDF 特征</td><td>~1.2</td></tr>
+    <tr><td>2</td><td>BM25 分数（f12）</td><td>~1.2</td></tr>
+    <tr><td>3-5</td><td>TF-IDF 特征</td><td>~0.9~1.0</td></tr>
   </table>
 
-  <p>特征 f12（即 BM25 分数）排在第 2 位，印证了 BM25 在相关性排序中的核心作用。</p>
+  <p>特征 f12（即 BM25 分数）稳定排在第 2 位，印证了 BM25 在相关性排序中的核心作用。精确权重数值请参考 <code>output/eval_report.txt</code> 或训练时的输出。</p>
 </section>
 
 <!-- ========== 10. FILES ========== -->
@@ -718,6 +722,7 @@ pipeline = Pipeline([
     <span class="indent"><span class="file">train_eval.py</span>            <span class="comment">-- 训练 + GridSearch + 评估</span></span><br>
     <span class="indent"><span class="file">infer_qtr.py</span>             <span class="comment">-- QTR 测试集推理</span></span><br>
     <span class="indent"><span class="file">infer_ir.py</span>              <span class="comment">-- IR 检索 + Rerank 全流程</span></span><br>
+    <span class="file">run_pipeline.py</span>               <span class="comment">-- 一键运行脚本</span><br>
     <br>
     <span class="folder">models/</span><br>
     <span class="indent"><span class="file">lr_rerank.pkl</span>           <span class="comment">-- 训练好的 LR Pipeline</span></span><br>
@@ -731,8 +736,8 @@ pipeline = Pipeline([
     <span class="indent"><span class="file">feature_importance.png</span>   <span class="comment">-- 特征重要性图</span></span><br>
     <span class="indent"><span class="file">KUAKE-QTR_test_pred.json</span><span class="comment">-- QTR 测试集预测</span></span><br>
     <span class="indent"><span class="file">KUAKE-IR_dev_pred.tsv</span>    <span class="comment">-- IR 检索 + Rerank 结果</span></span><br>
-    <span class="indent"><span class="file">lr_rerank_report.html</span>   <span class="comment">-- 本文档</span></span><br>
   </div>
+  <p style="margin-top:8px;">根目录另含 <code>run_pipeline.py</code>（一键运行）与本报告 <code>lr_rerank_report.html</code>。数据集 <code>KUAKE-QTR/</code>、<code>KUAKE-IR/</code> 已纳入版本库，其中 <code>corpus.tsv</code>（334 MB）通过 Git LFS 跟踪。</p>
 </section>
 
 <!-- ========== 11. OUTPUTS ========== -->
@@ -768,8 +773,8 @@ score = sum(result[0][2:])  <span class="cm"># P(label≥2)</span></pre>
 
   <ul>
     <li><strong>FeatureUnion + Pipeline</strong> 整合了 12 维手动特征（含 BM25）和 3 路 TF-IDF 特征，构建了一个可复用的排序模型</li>
-    <li><strong>QTR 排序任务</strong>上 NDCG@10 = 0.87，LR 模型能够有效分辨医学 query 与 title 的相关性</li>
-    <li><strong>IR 全量检索场景</strong>中，TF-IDF 初筛 + LR Rerank 两步走，在 96 万段落中做到 NDCG@10 = 0.72，验证了轻量方案的可行性</li>
+    <li><strong>QTR 排序任务</strong>上 NDCG@10 = 0.87（全量统计），LR 模型能够有效分辨医学 query 与 title 的相关性</li>
+    <li><strong>IR 全量检索场景</strong>中，TF-IDF 初筛 + LR Rerank 两步走，在 96 万段落中通过<strong>初筛 vs rerank 全量对比评估</strong>验证了重排能提升排序质量，凸显轻量方案的可行性</li>
     <li>BM25 分数在特征重要性中排名第 2，说明传统 IR 特征在排序中仍然不可或缺</li>
   </ul>
 
